@@ -12,6 +12,7 @@ from tkinter import messagebox, ttk
 CONFIG_PATH = os.path.expanduser("~/.ssh/config")
 DEFAULT_PROCESS = "dabc_exe"
 DEFAULT_INTERVAL_S = 5
+RESTART_COOLDOWN_S = 60
 
 
 def parse_mingo_hosts():
@@ -64,7 +65,7 @@ def check_host(host, process_name):
 
 
 class HostRow:
-    def __init__(self, parent, host):
+    def __init__(self, parent, host, restart_callback):
         self.host = host
         self.frame = ttk.Frame(parent)
         self.canvas = tk.Canvas(self.frame, width=16, height=16, highlightthickness=0)
@@ -72,11 +73,15 @@ class HostRow:
         self.host_label = ttk.Label(self.frame, text=host, width=10)
         self.status_label = ttk.Label(self.frame, text="checking...")
         self.time_label = ttk.Label(self.frame, text="")
+        self.restart_button = ttk.Button(
+            self.frame, text="Restart tunnel", command=lambda: restart_callback(host)
+        )
 
         self.canvas.grid(row=0, column=0, padx=(0, 6))
         self.host_label.grid(row=0, column=1, sticky="w")
         self.status_label.grid(row=0, column=2, sticky="w", padx=(8, 0))
         self.time_label.grid(row=0, column=3, sticky="w", padx=(8, 0))
+        self.restart_button.grid(row=0, column=4, sticky="e", padx=(10, 0))
         self.frame.grid_columnconfigure(2, weight=1)
 
     def grid(self, row):
@@ -102,9 +107,11 @@ class App:
 
         self.checking = False
         self.after_id = None
+        self.last_restart_at = {}
 
         self.host_rows = []
         self.hosts = []
+        self.auto_restart_var = tk.BooleanVar(value=False)
 
         self._build_ui()
         self._load_default_hosts()
@@ -135,6 +142,11 @@ class App:
         ttk.Button(controls, text="Check now", command=self.check_now).grid(
             row=3, column=1, pady=(6, 0), sticky="w"
         )
+        ttk.Checkbutton(
+            controls,
+            text="Auto-restart tunnel on red (1/min)",
+            variable=self.auto_restart_var,
+        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(6, 0))
         # ttk.Button(controls, text="Help", command=self.show_help).grid(
         #     row=3, column=2, pady=(6, 0), sticky="w", padx=(10, 0),
         # )
@@ -176,10 +188,11 @@ class App:
             row.frame.destroy()
         self.host_rows = []
         for i, host in enumerate(hosts):
-            row = HostRow(self.status_frame, host)
+            row = HostRow(self.status_frame, host, self.restart_tunnel_async)
             row.grid(i)
             self.host_rows.append(row)
         self.status_frame.grid_columnconfigure(0, weight=1)
+        self.last_restart_at = {host: 0 for host in hosts}
 
     def apply_settings(self):
         hosts = self._parse_hosts()
@@ -225,8 +238,75 @@ class App:
         for row in self.host_rows:
             color, text = results.get(row.host, ("red", "no result"))
             row.set_status(color, text)
+            if color == "red" and self.auto_restart_var.get():
+                self._maybe_restart_tunnel(row.host)
         self.checking = False
         self.after_id = self.root.after(self._get_interval_ms(), self.check_now)
+
+    def _maybe_restart_tunnel(self, host):
+        now = time.time()
+        last = self.last_restart_at.get(host, 0)
+        if now - last < RESTART_COOLDOWN_S:
+            return
+        self.last_restart_at[host] = now
+        thread = threading.Thread(
+            target=self.restart_tunnel, args=(host, False), daemon=True
+        )
+        thread.start()
+
+    def restart_tunnel_async(self, host):
+        self.last_restart_at[host] = time.time()
+        thread = threading.Thread(
+            target=self.restart_tunnel, args=(host, True), daemon=True
+        )
+        thread.start()
+
+    def restart_tunnel(self, host, notify=True):
+        patterns = [f"autossh.*{host}", "autossh.*lipana"]
+        for pattern in patterns:
+            try:
+                pids = subprocess.check_output(
+                    ["pgrep", "-f", pattern], text=True
+                ).strip()
+            except subprocess.CalledProcessError:
+                pids = ""
+            except OSError as exc:
+                if notify:
+                    self.root.after(
+                        0,
+                        lambda: messagebox.showerror(
+                            "Restart tunnel",
+                            f"Error running pgrep: {exc}",
+                            parent=self.root,
+                        ),
+                    )
+                return
+
+            if not pids:
+                continue
+
+            for pid in pids.splitlines():
+                subprocess.run(["kill", pid], check=False)
+            if notify:
+                self.root.after(
+                    0,
+                    lambda: messagebox.showinfo(
+                        "Restart tunnel",
+                        f"Closing the tunnel for {host}... It will reopen in less than a minute.",
+                        parent=self.root,
+                    ),
+                )
+            return
+
+        if notify:
+            self.root.after(
+                0,
+                lambda: messagebox.showinfo(
+                    "Restart tunnel",
+                    f"No autossh process found for {host}.",
+                    parent=self.root,
+                ),
+            )
 
 
 def main():
