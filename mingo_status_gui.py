@@ -79,7 +79,7 @@ class HostRow:
 
         self.canvas.grid(row=0, column=0, padx=(0, 6))
         self.host_label.grid(row=0, column=1, sticky="w")
-        self.status_label.grid(row=0, column=2, sticky="w", padx=(8, 0))
+        self.status_label.grid(row=0, column=2, sticky="ew", padx=(8, 0))
         self.time_label.grid(row=0, column=3, sticky="w", padx=(8, 0))
         self.restart_button.grid(row=0, column=4, sticky="e", padx=(10, 0))
         self.frame.grid_columnconfigure(2, weight=1)
@@ -92,12 +92,29 @@ class HostRow:
         self.status_label.configure(text=text)
         self.time_label.configure(text=time.strftime("%H:%M:%S"))
 
+    def set_wrap_width(self, width):
+        self.status_label.configure(wraplength=max(150, width - 200))
+
+    def set_compact(self, compact):
+        if compact:
+            self.status_label.grid_remove()
+            self.restart_button.grid_remove()
+            self.time_label.grid(row=0, column=2, sticky="w", padx=(8, 0))
+            self.frame.grid_columnconfigure(2, weight=0)
+        else:
+            self.status_label.grid(row=0, column=2, sticky="ew", padx=(8, 0))
+            self.time_label.grid(row=0, column=3, sticky="w", padx=(8, 0))
+            self.restart_button.grid(row=0, column=4, sticky="e", padx=(10, 0))
+            self.frame.grid_columnconfigure(2, weight=1)
+
 
 class App:
     def __init__(self, root, hosts=None, process=None, interval=None):
         self.root = root
         self.root.title("miniTRASGO Status Monitor")
-        self.root.resizable(False, False)
+        self.root.resizable(True, True)
+        self.root.grid_columnconfigure(0, weight=1)
+        self.root.grid_rowconfigure(1, weight=1)
 
         self.process_var = tk.StringVar(value=process or DEFAULT_PROCESS)
         self.interval_var = tk.StringVar(
@@ -108,6 +125,7 @@ class App:
         self.checking = False
         self.after_id = None
         self.last_restart_at = {}
+        self.compact_view = False
 
         self.host_rows = []
         self.hosts = []
@@ -119,17 +137,18 @@ class App:
 
     def _build_ui(self):
         controls = ttk.Frame(self.root, padding=10)
-        status_frame = ttk.Frame(self.root, padding=(10, 0, 10, 10))
+        status_frame = ttk.Frame(self.root, padding=(10, 0, 10, 0))
+        actions = ttk.Frame(self.root, padding=(10, 6, 10, 10))
 
         ttk.Label(controls, text="Hosts (comma-separated):").grid(
             row=0, column=0, sticky="w"
         )
         ttk.Entry(controls, textvariable=self.hosts_var, width=40).grid(
-            row=0, column=1, sticky="w"
+            row=0, column=1, sticky="ew"
         )
         ttk.Label(controls, text="Process:").grid(row=1, column=0, sticky="w")
         ttk.Entry(controls, textvariable=self.process_var, width=20).grid(
-            row=1, column=1, sticky="w"
+            row=1, column=1, sticky="ew"
         )
         ttk.Label(controls, text="Interval (s):").grid(row=2, column=0, sticky="w")
         ttk.Entry(controls, textvariable=self.interval_var, width=10).grid(
@@ -151,9 +170,36 @@ class App:
         #     row=3, column=2, pady=(6, 0), sticky="w", padx=(10, 0),
         # )
 
+        self.view_button = ttk.Button(
+            actions, text="Compact view", command=self.toggle_view
+        )
+        self.view_button.grid(row=0, column=0, sticky="w")
+
+        controls.grid_columnconfigure(1, weight=1)
+        self.controls = controls
         self.status_frame = status_frame
         controls.grid(row=0, column=0, sticky="ew")
-        status_frame.grid(row=1, column=0, sticky="ew")
+        status_frame.grid(row=1, column=0, sticky="nsew")
+        actions.grid(row=2, column=0, sticky="ew")
+        self.root.bind("<Configure>", self._on_resize)
+
+    def _on_resize(self, event):
+        if event.widget is not self.root:
+            return
+        width = self.status_frame.winfo_width()
+        for row in self.host_rows:
+            row.set_wrap_width(width)
+
+    def toggle_view(self):
+        self.compact_view = not self.compact_view
+        if self.compact_view:
+            self.controls.grid_remove()
+            self.view_button.configure(text="Full view")
+        else:
+            self.controls.grid()
+            self.view_button.configure(text="Compact view")
+        for row in self.host_rows:
+            row.set_compact(self.compact_view)
 
     def show_help(self):
         message = (
@@ -190,6 +236,7 @@ class App:
         for i, host in enumerate(hosts):
             row = HostRow(self.status_frame, host, self.restart_tunnel_async)
             row.grid(i)
+            row.set_compact(self.compact_view)
             self.host_rows.append(row)
         self.status_frame.grid_columnconfigure(0, weight=1)
         self.last_restart_at = {host: 0 for host in hosts}
