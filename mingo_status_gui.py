@@ -13,6 +13,8 @@ CONFIG_PATH = os.path.expanduser("~/.ssh/config")
 DEFAULT_PROCESS = "dabc_exe"
 DEFAULT_INTERVAL_S = 5
 RESTART_COOLDOWN_S = 60
+FULL_VIEW_SIZE = (555, 375)
+COMPACT_VIEW_SIZE = (220, 160)
 
 
 def parse_mingo_hosts():
@@ -30,6 +32,59 @@ def parse_mingo_hosts():
     except OSError:
         return []
     return sorted(set(hosts))
+
+
+def get_host_match_terms(host):
+    terms = [host]
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            current_hosts = []
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                lower = line.lower()
+                if lower.startswith("host "):
+                    current_hosts = line.split()[1:]
+                    continue
+                if not current_hosts or host not in current_hosts:
+                    continue
+                if lower.startswith("hostname "):
+                    hostname = line.split(None, 1)[1].strip()
+                    if hostname:
+                        terms.append(hostname)
+    except OSError:
+        return terms
+    seen = set()
+    unique_terms = []
+    for term in terms:
+        if term not in seen:
+            unique_terms.append(term)
+            seen.add(term)
+    return unique_terms
+
+
+def build_tunnel_patterns(host):
+    patterns = []
+    for term in get_host_match_terms(host):
+        escaped = re.escape(term)
+        patterns.extend(
+            [
+                f"autossh.*{escaped}",
+                f"ssh.*-N.*{escaped}",
+                f"ssh.*{escaped}.*-N",
+                f"ssh.*-L.*{escaped}",
+                f"ssh.*{escaped}.*-L",
+            ]
+        )
+    patterns.append("autossh.*lipana")
+    seen = set()
+    unique_patterns = []
+    for pattern in patterns:
+        if pattern not in seen:
+            unique_patterns.append(pattern)
+            seen.add(pattern)
+    return unique_patterns
 
 
 def check_host(host, process_name):
@@ -200,6 +255,14 @@ class App:
             self.view_button.configure(text="Compact view")
         for row in self.host_rows:
             row.set_compact(self.compact_view)
+        self._resize_for_view()
+
+    def _resize_for_view(self):
+        width, height = FULL_VIEW_SIZE
+        if self.compact_view:
+            width, height = COMPACT_VIEW_SIZE
+        self.root.update_idletasks()
+        self.root.geometry(f"{width}x{height}")
 
     def show_help(self):
         message = (
@@ -309,7 +372,7 @@ class App:
         thread.start()
 
     def restart_tunnel(self, host, notify=True):
-        patterns = [f"autossh.*{host}", "autossh.*lipana"]
+        patterns = build_tunnel_patterns(host)
         for pattern in patterns:
             try:
                 pids = subprocess.check_output(
